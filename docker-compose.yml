@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  neo4j:
+    image: neo4j:5.15
+    container_name: graphrag-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/password123
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+      NEO4J_dbms_security_procedures_allowlist: "apoc.*"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - graphrag-net
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: graphrag-app
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    networks:
+      - graphrag-net
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+
+networks:
+  graphrag-net:
+    driver: bridge
