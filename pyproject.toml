@@ -1,0 +1,39 @@
+[project]
+name = "graphrag"
+version = "1.0.0"
+description = "Hybrid GraphRAG over documents: Gemini embeddings + Neo4j vector search and graph traversal, served via FastAPI with a Streamlit UI."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# A pragmatic set: pycodestyle/pyflakes, import sorting, pyupgrade, bugbear,
+# comprehensions, simplify and blind-except (the codebase already annotates
+# intentional broad excepts with `# noqa: BLE001`).
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "BLE"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests reach into private attributes and re-import inside functions on purpose.
+"tests/*" = ["SLF001"]
+# FastAPI expresses request params as callable defaults, e.g. `File(...)`.
+"app/api/routes/*" = ["B008"]
+# The extraction prompt is a fixed template; wrapping its lines would change
+# the text sent to the model.
+"app/core/ingestion/entity_extractor.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = false
+warn_redundant_casts = true
+check_untyped_defs = true
+exclude = ["tests/", "frontend/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
