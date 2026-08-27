@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -155,12 +155,18 @@ def test_document_loader_unsupported() -> None:
 # ----------------------------------------------------------------------
 def _make_extractor() -> EntityExtractor:
     """Build an EntityExtractor without touching the real Gemini client."""
-    with patch("app.core.ingestion.entity_extractor.genai") as mock_genai:
-        mock_genai.GenerativeModel.return_value = MagicMock()
-        extractor = EntityExtractor.__new__(EntityExtractor)
-        extractor._settings = MagicMock()  # type: ignore[attr-defined]
-        extractor._model = MagicMock()  # type: ignore[attr-defined]
+    extractor = EntityExtractor.__new__(EntityExtractor)
+    extractor._settings = MagicMock()  # type: ignore[attr-defined]
+    extractor._client = MagicMock()  # type: ignore[attr-defined]
+    extractor._model = "fake-model"  # type: ignore[attr-defined]
     return extractor
+
+
+def _set_response(extractor: EntityExtractor, raw: str) -> None:
+    """Stub the client so a generate_content call returns ``raw`` text."""
+    extractor._client.models.generate_content.return_value = MagicMock(  # type: ignore[attr-defined]
+        text=raw
+    )
 
 
 def test_entity_extractor_parse() -> None:
@@ -172,7 +178,7 @@ def test_entity_extractor_parse() -> None:
         '"relationships": [{"source": "Neo4j", "relation": "IS_A", '
         '"target": "Database", "description": "Neo4j is a database."}]}'
     )
-    extractor._model.generate_content.return_value = MagicMock(text=raw)  # type: ignore[attr-defined]
+    _set_response(extractor, raw)
     result = extractor.extract("Neo4j is a graph database.")
     assert len(result["entities"]) == 1
     assert result["entities"][0]["name"] == "Neo4j"
@@ -183,7 +189,7 @@ def test_entity_extractor_strips_code_fence() -> None:
     """JSON wrapped in a markdown code fence is still parsed."""
     extractor = _make_extractor()
     raw = '```json\n{"entities": [], "relationships": []}\n```'
-    extractor._model.generate_content.return_value = MagicMock(text=raw)  # type: ignore[attr-defined]
+    _set_response(extractor, raw)
     result = extractor.extract("some text")
     assert result == {"entities": [], "relationships": []}
 
@@ -191,9 +197,7 @@ def test_entity_extractor_strips_code_fence() -> None:
 def test_entity_extractor_malformed_json() -> None:
     """Garbage model output yields an empty structure without raising."""
     extractor = _make_extractor()
-    extractor._model.generate_content.return_value = MagicMock(  # type: ignore[attr-defined]
-        text="this is not json at all"
-    )
+    _set_response(extractor, "this is not json at all")
     result = extractor.extract("some text")
     assert result == {"entities": [], "relationships": []}
 

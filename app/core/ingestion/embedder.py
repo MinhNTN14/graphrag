@@ -1,17 +1,18 @@
 """Gemini text embedding wrapper.
 
-Wraps ``google.generativeai.embed_content`` with tenacity retries. Uses the
-``models/text-embedding-004`` model which produces 768-dimensional vectors.
+Wraps the ``google-genai`` ``embed_content`` call with tenacity retries. The
+embedding model is resolved dynamically (``gemini-embedding-001`` on current
+APIs) and always requested at 768 dimensions to match the vector index.
 """
 
 from __future__ import annotations
 
-import google.generativeai as genai
+from google.genai import types
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.config import Settings, get_settings
-from app.core.gemini_models import resolve_embedding_model
+from app.core.gemini_models import get_client, resolve_embedding_model
 
 # The vector index is created with 768 dimensions; request that size
 # explicitly (the model would otherwise default to a larger dimensionality).
@@ -28,7 +29,7 @@ class GeminiEmbedder:
             settings: Optional settings override.
         """
         self._settings = settings or get_settings()
-        genai.configure(api_key=self._settings.gemini_api_key)
+        self._client = get_client(self._settings)
         self._model = resolve_embedding_model(self._settings)
 
     @retry(stop=stop_after_attempt(6), wait=wait_exponential(multiplier=2, min=4, max=64))
@@ -42,16 +43,17 @@ class GeminiEmbedder:
             A 768-dimensional embedding vector.
         """
         logger.debug(f"Embedding text of length {len(text)} with {self._model}")
-        kwargs: dict[str, object] = {}
+        config: types.EmbedContentConfig | None = None
         # Only the gemini-embedding-* models accept a custom output dimension;
         # text-embedding-004 already returns 768 dims natively.
         if "gemini-embedding" in self._model:
-            kwargs["output_dimensionality"] = _EMBEDDING_DIMENSIONS
-        response = genai.embed_content(model=self._model, content=text, **kwargs)
-        # The SDK returns either a dict with an 'embedding' key or an object.
-        if isinstance(response, dict):
-            return list(response["embedding"])
-        return list(response.embedding)  # type: ignore[attr-defined]
+            config = types.EmbedContentConfig(
+                output_dimensionality=_EMBEDDING_DIMENSIONS
+            )
+        response = self._client.models.embed_content(
+            model=self._model, contents=text, config=config
+        )
+        return list(response.embeddings[0].values)
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts one by one.

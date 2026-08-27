@@ -1,8 +1,8 @@
 """Entity and relationship extraction using Gemini.
 
-Prompts ``gemini-1.5-flash`` to return a strict JSON object describing entities
-and relationships found in a piece of text. Parsing failures are handled
-gracefully by returning an empty structure rather than raising.
+Prompts the resolved generation model to return a strict JSON object describing
+entities and relationships found in a piece of text. Parsing failures are
+handled gracefully by returning an empty structure rather than raising.
 """
 
 from __future__ import annotations
@@ -11,12 +11,11 @@ import json
 import re
 from typing import Any
 
-import google.generativeai as genai
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.config import Settings, get_settings
-from app.core.gemini_models import resolve_generation_model
+from app.core.gemini_models import get_client, resolve_generation_model
 
 _PROMPT_TEMPLATE = """Extract all entities and relationships from the text below.
 
@@ -52,8 +51,8 @@ class EntityExtractor:
             settings: Optional settings override.
         """
         self._settings = settings or get_settings()
-        genai.configure(api_key=self._settings.gemini_api_key)
-        self._model = genai.GenerativeModel(resolve_generation_model(self._settings))
+        self._client = get_client(self._settings)
+        self._model = resolve_generation_model(self._settings)
 
     def extract(self, text: str) -> dict[str, Any]:
         """Extract entities and relationships from ``text``.
@@ -94,7 +93,9 @@ class EntityExtractor:
         """
         prompt = _PROMPT_TEMPLATE.format(text=text)
         logger.debug(f"Extracting entities from text of length {len(text)}")
-        response = self._model.generate_content(prompt)
+        response = self._client.models.generate_content(
+            model=self._model, contents=prompt
+        )
         return response.text or ""
 
     def _parse_response(self, raw: str) -> dict[str, Any] | None:

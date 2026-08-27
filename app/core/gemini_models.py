@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-import google.generativeai as genai
+from google import genai
 from loguru import logger
 
 from app.config import Settings, get_settings
@@ -43,9 +43,26 @@ _generation_model: str | None = None
 _embedding_model: str | None = None
 
 
-def _configure(settings: Settings) -> None:
-    """Configure the Gemini client with the API key."""
-    genai.configure(api_key=settings.gemini_api_key)
+@lru_cache(maxsize=2)
+def _client_for(api_key: str) -> genai.Client:
+    """Return a cached ``genai.Client`` for ``api_key``."""
+    return genai.Client(api_key=api_key)
+
+
+def get_client(settings: Settings | None = None) -> genai.Client:
+    """Return the shared Gemini client for the configured API key.
+
+    The client is cached per API key so every collaborator (embedder,
+    extractor, generator) reuses one instance instead of opening its own.
+
+    Args:
+        settings: Optional settings override.
+
+    Returns:
+        A configured :class:`google.genai.Client`.
+    """
+    settings = settings or get_settings()
+    return _client_for(settings.gemini_api_key)
 
 
 @lru_cache(maxsize=4)
@@ -53,7 +70,7 @@ def _available(method: str) -> frozenset[str]:
     """Return the bare names of models supporting ``method``.
 
     Args:
-        method: A generation method, e.g. ``"generateContent"`` or
+        method: A supported action, e.g. ``"generateContent"`` or
             ``"embedContent"``.
 
     Returns:
@@ -62,9 +79,12 @@ def _available(method: str) -> frozenset[str]:
     """
     try:
         names: set[str] = set()
-        for model in genai.list_models():
-            if method in getattr(model, "supported_generation_methods", []):
-                names.add(model.name.split("/")[-1])
+        for model in get_client().models.list():
+            # The google-genai SDK exposes the capability list as
+            # ``supported_actions`` (the legacy SDK called it
+            # ``supported_generation_methods``).
+            if method in (getattr(model, "supported_actions", None) or []):
+                names.add((model.name or "").split("/")[-1])
         return frozenset(names)
     except Exception as exc:  # noqa: BLE001 - listing is best-effort
         logger.warning(f"Could not list Gemini models ({exc}); using static default")
@@ -112,7 +132,6 @@ def resolve_generation_model(settings: Settings | None = None) -> str:
     global _generation_model
     if _generation_model is None:
         settings = settings or get_settings()
-        _configure(settings)
         _generation_model = _select(
             GENERATION_PRIORITY, "generateContent", _GENERATION_FALLBACK, "generation"
         )
@@ -131,7 +150,6 @@ def resolve_embedding_model(settings: Settings | None = None) -> str:
     global _embedding_model
     if _embedding_model is None:
         settings = settings or get_settings()
-        _configure(settings)
         name = _select(
             EMBEDDING_PRIORITY, "embedContent", _EMBEDDING_FALLBACK, "embedding"
         )

@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-import google.generativeai as genai
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.config import Settings, get_settings
-from app.core.gemini_models import resolve_generation_model
+from app.core.gemini_models import get_client, resolve_generation_model
 
 _PROMPT_TEMPLATE = """You are a helpful assistant answering questions based on the provided context.
 
@@ -39,8 +38,8 @@ class AnswerGenerator:
             settings: Optional settings override.
         """
         self._settings = settings or get_settings()
-        genai.configure(api_key=self._settings.gemini_api_key)
-        self._model = genai.GenerativeModel(resolve_generation_model(self._settings))
+        self._client = get_client(self._settings)
+        self._model = resolve_generation_model(self._settings)
 
     def generate(self, question: str, retrieval_result: dict[str, Any]) -> dict[str, Any]:
         """Generate an answer for ``question`` from a retrieval result.
@@ -145,5 +144,7 @@ class AnswerGenerator:
             context=context, graph_section=graph_section, question=question
         )
         logger.debug("Generating answer from context")
-        response = self._model.generate_content(prompt)
+        response = self._client.models.generate_content(
+            model=self._model, contents=prompt
+        )
         return (response.text or "").strip()
