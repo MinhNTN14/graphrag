@@ -14,6 +14,36 @@ from app.models.document import IngestRequest, IngestResponse
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 
+# Upper bound on a single upload. Gemini extraction is slow and metered, so we
+# reject very large files up front rather than spending quota on them.
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
+
+
+def _check_upload_size(content: bytes, file_label: str) -> None:
+    """Validate the size of an uploaded file before any processing.
+
+    Args:
+        content: The raw bytes read from the upload.
+        file_label: The file name, for the error message.
+
+    Raises:
+        HTTPException: If the upload is empty or exceeds ``MAX_UPLOAD_BYTES``.
+    """
+    if len(content) == 0:
+        raise HTTPException(
+            status_code=400, detail=f"Uploaded file '{file_label}' is empty"
+        )
+    if len(content) > MAX_UPLOAD_BYTES:
+        size_mb = len(content) / 1024 / 1024
+        limit_mb = MAX_UPLOAD_BYTES / 1024 / 1024
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Uploaded file '{file_label}' is {size_mb:.1f} MB; "
+                f"the limit is {limit_mb:.0f} MB."
+            ),
+        )
+
 
 def _build_response(summary: dict, file_label: str) -> IngestResponse:
     """Construct an :class:`IngestResponse` from a builder summary.
@@ -58,6 +88,7 @@ async def ingest_upload(
     builder: GraphBuilder = request.app.state.graph_builder
 
     content = await file.read()
+    _check_upload_size(content, file.filename or "upload")
     try:
         pages = loader.load_from_bytes(content, file.filename or "upload")
     except UnsupportedFileTypeError as exc:

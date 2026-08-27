@@ -88,6 +88,24 @@ def test_ingest_txt_file(client) -> None:
     assert body["chunks_processed"] >= 1
 
 
+def test_ingest_empty_file_rejected(client) -> None:
+    """An empty upload is rejected with HTTP 400 before any processing."""
+    files = {"file": ("empty.txt", b"", "text/plain")}
+    resp = client.post("/api/v1/ingest", files=files)
+    assert resp.status_code == 400
+    assert "empty" in resp.json()["detail"].lower()
+
+
+def test_ingest_oversized_file_rejected(client, monkeypatch) -> None:
+    """An upload above the size limit is rejected with HTTP 413."""
+    from app.api.routes import ingest as ingest_routes
+
+    monkeypatch.setattr(ingest_routes, "MAX_UPLOAD_BYTES", 8)
+    files = {"file": ("big.txt", b"this is definitely more than eight bytes", "text/plain")}
+    resp = client.post("/api/v1/ingest", files=files)
+    assert resp.status_code == 413
+
+
 def test_query_hybrid_mode(client) -> None:
     """A hybrid-mode query returns an answer and sources."""
     payload = {"question": "What is GraphRAG?", "mode": "hybrid", "top_k": 5}
@@ -103,6 +121,12 @@ def test_query_invalid_mode(client) -> None:
     """An invalid mode value is rejected with HTTP 422."""
     payload = {"question": "hi", "mode": "invalid", "top_k": 5}
     resp = client.post("/api/v1/query", json=payload)
+    assert resp.status_code == 422
+
+
+def test_query_empty_question_rejected(client) -> None:
+    """An empty question is rejected by validation before retrieval runs."""
+    resp = client.post("/api/v1/query", json={"question": "", "mode": "hybrid"})
     assert resp.status_code == 422
 
 

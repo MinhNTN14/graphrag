@@ -20,7 +20,11 @@ class QueryRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    question: str = Field(description="The natural-language question to answer.")
+    question: str = Field(
+        min_length=1,
+        max_length=4000,
+        description="The natural-language question to answer.",
+    )
     mode: QueryMode = Field(
         default=QueryMode.HYBRID, description="Retrieval strategy to use."
     )
