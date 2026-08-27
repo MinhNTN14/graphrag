@@ -56,7 +56,7 @@ class DocumentLoader:
             with open(file_path, "rb") as handle:
                 return self._load_pdf(handle.read(), file_name)
         if ext in _TEXT_EXTENSIONS:
-            with open(file_path, "r", encoding="utf-8", errors="replace") as handle:
+            with open(file_path, encoding="utf-8", errors="replace") as handle:
                 return self._load_text(handle.read(), file_name)
         raise UnsupportedFileTypeError(f"Unsupported file type: {ext}")
 
@@ -208,10 +208,10 @@ class DocumentLoader:
         """
         cx = (obj["x0"] + obj["x1"]) / 2
         cy = (obj["top"] + obj["bottom"]) / 2
-        for x0, top, x1, bottom in boxes:
-            if x0 <= cx <= x1 and top <= cy <= bottom:
-                return False
-        return True
+        return all(
+            not (x0 <= cx <= x1 and top <= cy <= bottom)
+            for x0, top, x1, bottom in boxes
+        )
 
     @staticmethod
     def _looks_like_real_table(rows: list[list[str | None]]) -> bool:

@@ -7,9 +7,8 @@ Provides two tabs:
 
 from __future__ import annotations
 
-from typing import Any
-
 import json
+from typing import Any
 
 import altair as alt
 import numpy as np
@@ -400,7 +399,7 @@ def _render_sources(sources: list[dict[str, Any]]) -> None:
     with st.expander(f"📚 Sources ({len(sources)})"):
         for src in sources:
             score = src.get("score")
-            score_str = f" | score={score:.4f}" if isinstance(score, (int, float)) else ""
+            score_str = f" | score={score:.4f}" if isinstance(score, int | float) else ""
             st.markdown(
                 f"**{src.get('chunk_id', '?')}** "
                 f"(doc `{src.get('doc_id', '?')}`, "
@@ -761,7 +760,7 @@ def render_pipeline_tab() -> None:
                     ],
                     "2D (PC1, PC2)": [
                         (round(float(x), 3), round(float(y), 3))
-                        for x, y in zip(df["x"], df["y"])
+                        for x, y in zip(df["x"], df["y"], strict=False)
                     ],
                 }
             ),
@@ -1035,7 +1034,7 @@ def _render_query_projection(
     line_rows = [
         {"x": q_x, "y": q_y, "x2": float(px), "y2": float(py),
          "score": round(retrieved[c["chunk_id"]], 4)}
-        for c, px, py in zip(chunks, df["x"], df["y"])
+        for c, px, py in zip(chunks, df["x"], df["y"], strict=False)
         if c["chunk_id"] in retrieved
     ]
 

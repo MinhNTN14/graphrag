@@ -103,7 +103,7 @@ class HybridRetriever:
 
         def sort_key(item: dict[str, Any]) -> float:
             score = item.get("score")
-            return score if isinstance(score, (int, float)) else -1.0
+            return score if isinstance(score, int | float) else -1.0
 
         merged = sorted(by_id.values(), key=sort_key, reverse=True)
         logger.debug(
