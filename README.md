@@ -1,5 +1,10 @@
 # GraphRAG
 
+[![CI](https://github.com/MinhNTN14/graphrag/actions/workflows/ci.yml/badge.svg)](https://github.com/MinhNTN14/graphrag/actions/workflows/ci.yml)
+[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A production-ready **GraphRAG** system that combines a **Neo4j** knowledge graph
 with **vector similarity search**, powered by **Google Gemini**. It supports both
 document Q&A (RAG) and entity-relationship exploration (Graph), exposed via a
@@ -51,9 +56,9 @@ Indexes: a **vector index** (`chunk_embedding`, 768 dims, cosine) on
 
 - Python 3.11
 - Neo4j 5.x (`neo4j` driver, APOC plugin)
-- Google Gemini — embeddings (768-d) + generation, with **dynamic model
-  selection** (see below): resolves to `gemini-embedding-001` +
-  `gemini-flash-latest` on current APIs
+- Google Gemini (via the `google-genai` SDK) — embeddings (768-d) + generation,
+  with **dynamic model selection** (see below): resolves to `gemini-embedding-001`
+  + `gemini-flash-latest` on current APIs
 - FastAPI + uvicorn
 - Streamlit + streamlit-agraph + altair + numpy (visualisations)
 - Docker + Docker Compose
@@ -63,8 +68,9 @@ Indexes: a **vector index** (`chunk_embedding`, 768 dims, cosine) on
 
 Model ids get retired (this app originally targeted `text-embedding-004` +
 `gemini-1.5-flash`, both since removed). Rather than hard-code one, at start-up
-`app/core/gemini_models.py` calls `list_models()` once and picks the **newest
-available** model from a priority list, falling back to older ones — and to a
+`app/core/gemini_models.py` lists the account's models once
+(`client.models.list()`) and picks the **newest available** model from a
+priority list (by each model's `supported_actions`), falling back to older ones — and to a
 broadly-available static default if the API can't be listed. So the app keeps
 working as Google rotates models. Priority (newest first):
 

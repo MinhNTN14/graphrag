@@ -96,9 +96,24 @@ flowchart TD
 
 Step by step:
 
-1. **Load** (`document_loader.py`). PDFs are read page-by-page with `pypdf`;
-   TXT/MD are read directly. The `doc_id` is a hash of the content, so
-   re-ingesting the same file is idempotent (a dedup check skips it).
+1. **Load — structure-aware PDF extraction** (`document_loader.py`). TXT/MD are
+   read directly. PDFs go through a **rich** path that preserves layout:
+   - **`pdfplumber`** runs `find_tables()` on each page. Detected tables are
+     emitted as **markdown pipe tables**, and the page's prose is pulled from
+     *outside* the table bounding boxes (`page.filter(...)`), so a table's cells
+     never get duplicated into the surrounding text.
+   - **`PyMuPDF`** (`fitz`) counts each page's embedded images via
+     `get_images(full=True)`; each becomes a markdown **image marker**.
+   - Emitting tables/images as markdown is deliberate: the downstream chunker
+     recognises those markers and keeps each table/figure as its **own atomic
+     chunk** (see step 2), tagged `block_type`.
+   - If the rich path throws for any reason, we **fall back** to plain `pypdf`
+     text extraction, so a pathological PDF degrades instead of failing.
+
+   The `doc_id` is a hash of the extracted content, so re-ingesting the same
+   file is idempotent (a dedup check skips it). Because the rich path yields
+   *different* text than the old `pypdf`-only path, it also produces a different
+   `doc_id` — re-ingesting an old document picks up the richer extraction.
 
 2. **Chunk — structure-aware / semantic** (`chunker.py`). Rather than blindly
    slicing a fixed number of words (which cuts through the middle of sentences
@@ -119,9 +134,14 @@ Step by step:
    `section`. `chunk_id` is `f"{doc_id}_{chunk_index}"`.
 
    *Note:* table/image detection is reliable for Markdown/text (pipe tables,
-   `![](…)` images). Native PDF text extraction (`pypdf`) does not preserve
-   tables or figures, so extracting those from PDFs would need a richer parser
-   (e.g. `pdfplumber` for tables, `PyMuPDF` for images) — a clean future add.
+   `![](…)` images) and now for native PDFs too (via `pdfplumber` + `PyMuPDF`,
+   step 1). The remaining rough edge is inherent to PDF table detection: on
+   **multi-column academic papers** `pdfplumber` can read a column gutter as a
+   table, or catch a figure's grid as a "table". A quality filter
+   (`_looks_like_real_table`: needs ≥2 rows, ≥2 columns, and a minimum fill
+   ratio) discards most false positives before they pollute the prose, but a
+   dense figure-diagram can still slip through — a limitation of heuristic PDF
+   parsing, not of the pipeline.
 
 3. **Embed** (`embedder.py`). Each chunk's text is sent to Gemini's embedding
    model, which returns a **768-dimensional** float vector. That number is not
@@ -271,11 +291,24 @@ document:
 
 Model ids get retired — this project originally used `text-embedding-004` and
 `gemini-1.5-flash`, both since removed by Google, which broke it. The fix
-(`gemini_models.py`): at start-up, call `list_models()` once, and pick the
-**newest available** model from a priority list, falling back to older ones, and
-to a broadly-available static default if listing fails. Result cached per
-process. Embeddings are always requested at 768 dims to match the index. So the
-app self-heals as models rotate instead of hard-failing.
+(`gemini_models.py`): at start-up, list the account's models once
+(`client.models.list()`) and pick the **newest available** model from a priority
+list, falling back to older ones, and to a broadly-available static default if
+listing fails. Selection is keyed on each model's **`supported_actions`** —
+`generateContent` for the LLM, `embedContent` for the embedder — so we never
+pick a model that can't perform the call. Result cached per process. Embeddings
+are always requested at 768 dims to match the index. So the app self-heals as
+models rotate instead of hard-failing.
+
+**SDK note.** The Gemini layer uses the current **`google-genai`** SDK (the
+`from google import genai` / `genai.Client(...)` client API), not the legacy
+`google-generativeai` package Google has since end-of-lifed. A single client is
+built once and cached per API key (`get_client()`), and every collaborator
+(embedder, extractor, generator) reuses it rather than re-configuring a global.
+The two SDKs differ in more than imports — e.g. the capability field was renamed
+`supported_generation_methods → supported_actions`, and an embedding response
+moved from `response.embedding` to `response.embeddings[0].values` — which is
+why the migration was verified against the live API, not just the mocked tests.
 
 ---
 
@@ -288,10 +321,10 @@ app self-heals as models rotate instead of hard-failing.
 | LLM-based entity extraction | Flexible, no schema/NER model to train, works on any domain | Non-deterministic, costs an LLM call per chunk, quality depends on the prompt |
 | `MERGE` everywhere | Idempotent ingest; safe to retry after a rate-limit failure | Slightly slower than raw `CREATE`; needs the uniqueness constraints |
 | Cosine similarity | Standard for text embeddings; length-invariant | — |
-| Character-window chunking | Simple, dependency-free, predictable | Not semantically aware; a smarter splitter (by heading/sentence) would improve chunk quality |
+| Structure-aware / semantic chunking | Respects headings & sentences, keeps tables/figures atomic → cleaner embeddings and retrieval | More parsing logic than a fixed window; PDF table detection is heuristic (occasional false positives) |
 | Defensive JSON parsing, empty-on-failure | One malformed LLM response can't abort a 100-chunk ingest | A silently-dropped chunk yields no entities (still embedded & retrievable) |
 | Tenacity exponential backoff | Free-tier Gemini is rate-limited (~RPM caps); backoff rides through 429s | Long ingests can be slow when throttled |
-| Dynamic model selection | Google retires model ids; hard-coding breaks the app | One extra `list_models()` call at start-up |
+| Dynamic model selection | Google retires model ids; hard-coding breaks the app | One extra `client.models.list()` call at start-up |
 
 ---
 
@@ -382,6 +415,15 @@ As singletons created in the FastAPI **lifespan** and stored on `app.state`, so
 the driver connection pool and configured model are reused across requests
 rather than rebuilt per call. Routes pull them off `request.app.state`.
 
+**Q: What validation guards the API against bad input?**
+Request bodies are **pydantic** models with `extra="forbid"`, so unknown fields
+are rejected (HTTP 422). The query `question` has a `min_length`/`max_length`, so
+an empty or absurdly long question is refused before any embedding call. Uploads
+are size-checked *before* processing (`_check_upload_size`): an empty file is a
+`400`, and anything over `MAX_UPLOAD_BYTES` (20 MB) is a `413 Content Too Large` —
+we reject up front rather than spend slow, metered Gemini quota on a file that's
+too big. Unsupported extensions raise a `400` from the loader.
+
 **Q: How do you handle Gemini rate limits?**
 Free tier caps requests-per-minute, so every model call is wrapped in
 **tenacity** exponential backoff (retry with growing waits, capped attempts). We
@@ -389,10 +431,10 @@ also reduce call volume with larger chunks. In production I'd add a token-bucket
 limiter, batch where the API allows, and cache embeddings for unchanged text.
 
 **Q: The app broke once because a model id was retired. How did you make it
-robust?** I added dynamic model selection: at start-up we `list_models()` and
-pick the newest available from a priority list, with fallbacks and a static
-default. The app now self-heals across Google's model rotations instead of
-hard-failing on a 404.
+robust?** I added dynamic model selection: at start-up we list the account's
+models (`client.models.list()`) and pick the newest available from a priority
+list, with fallbacks and a static default. The app now self-heals across
+Google's model rotations instead of hard-failing on a 404.
 
 **Q: How would you scale this to millions of documents?**
 Vector search stays sub-linear via the index (HNSW-style). The pressure points
@@ -414,10 +456,11 @@ verify every claim.
 **Q: What are the weakest parts of this system?**
 (1) No entity resolution, so "GPT-4" and "GPT 4" can become two nodes. (2) Entity
 extraction is non-deterministic and costs an LLM call per chunk. (3) No relevance
-evaluation harness yet. (4) Free-tier rate limits make big ingests slow. (5)
-Table/image separation works on Markdown but not on native-PDF text (`pypdf`
-gives plain text) — a richer PDF parser would close that gap. Each is a concrete,
-ownable improvement.
+evaluation harness yet. (4) Free-tier rate limits make big ingests slow. (5) PDF
+table/figure detection is heuristic — `pdfplumber` can misread a multi-column
+gutter or a figure grid as a "table"; a quality filter catches most, but
+layout-model extraction (e.g. a document-AI service) would be more robust. Each
+is a concrete, ownable improvement.
 
 **Q: How does the chunker preserve meaning?**
 It's **structure-aware**: text is parsed into heading / paragraph / table /
@@ -491,8 +534,8 @@ colours nodes by them.
 
 | Variable | Default | What it changes | Tune when… |
 |----------|---------|-----------------|------------|
-| `CHUNK_SIZE` | 1200 | Chars per chunk | Bigger → fewer LLM calls (dodges rate limits), coarser retrieval |
-| `CHUNK_OVERLAP` | 120 | Chars shared between neighbours | Raise if answers get cut at boundaries |
+| `CHUNK_SIZE` | 512 | Tokens (approx) per chunk | Bigger → fewer LLM calls (dodges rate limits), coarser retrieval |
+| `CHUNK_OVERLAP` | 50 | Tokens (approx) shared between neighbours | Raise if answers get cut at boundaries |
 | `TOP_K_RESULTS` | 5 | Chunks retrieved per query | Raise for recall, lower to cut prompt noise/cost |
 | embedding dim | 768 | Vector size (must match index) | Fixed — changing needs a new vector index |
 | graph hops | 2 | `RELATES_TO` traversal depth | Raise for deep multi-hop, but filter for relevance |
